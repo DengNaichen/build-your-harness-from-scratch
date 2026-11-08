@@ -11,7 +11,7 @@ const MAX_READ_CHARS = 30_000;
  * drive the next generation.
  */
 export function createTools(host: Host): Tool[] {
-  return [bashTool(host), readTool(host), writeTool(host)];
+  return [bashTool(host), readTool(host), writeTool(host), editTool(host)];
 }
 
 function bashTool(host: Host): Tool {
@@ -66,6 +66,33 @@ function readTool(host: Host): Tool {
         out = `${out.slice(0, MAX_READ_CHARS)}\n… [line too long, truncated]`;
       }
       return out;
+    },
+  };
+}
+
+function editTool(host: Host): Tool {
+  return {
+    name: "edit",
+    description:
+      "Replace one exact piece of text in an existing file, relative to the workspace root. " +
+      "Use it for targeted changes; use write to create a file or rewrite it entirely. " +
+      "old_string must match the file character for character, and must be unique in it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path relative to the workspace root." },
+        old_string: {
+          type: "string",
+          description:
+            "The exact text to replace, including whitespace and newlines. " +
+            "It must occur exactly once in the file: include surrounding lines if needed.",
+        },
+        new_string: { type: "string", description: "The text to put in its place. May be empty to delete." },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+    async run() {
+      throw new Error("not implemented");
     },
   };
 }

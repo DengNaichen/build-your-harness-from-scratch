@@ -91,8 +91,16 @@ function editTool(host: Host): Tool {
       },
       required: ["path", "old_string", "new_string"],
     },
-    async run() {
-      throw new Error("not implemented");
+    async run(args) {
+      const filePath = String(args.path);
+      const oldString = String(args.old_string);
+      const newString = String(args.new_string);
+
+      const content = await host.read(filePath);
+      const at = content.indexOf(oldString);
+      const updated = content.slice(0, at) + newString + content.slice(at + oldString.length);
+      await host.write(filePath, updated);
+      return `edited ${filePath}`;
     },
   };
 }

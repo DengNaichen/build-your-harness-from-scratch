@@ -5,10 +5,9 @@ const MAX_READ_LINES = 400;
 const MAX_READ_CHARS = 30_000;
 
 /**
- * G0 toolset: three tools, deliberately orthogonal.
- * `edit` / `glob` / `grep` belong to G1 — adding them now would hide the fact
- * that whole-file rewrites are painful, which is exactly the signal that should
- * drive the next generation.
+ * Four tools, deliberately orthogonal. `edit` arrived once whole-file `write`
+ * proved painful and silently lossy (see lessons/01-edit.md). `glob` / `grep`
+ * wait for the same kind of evidence.
  */
 export function createTools(host: Host): Tool[] {
   return [bashTool(host), readTool(host), writeTool(host), editTool(host)];
@@ -88,6 +87,12 @@ function editTool(host: Host): Tool {
             "It must occur exactly once in the file: include surrounding lines if needed.",
         },
         new_string: { type: "string", description: "The text to put in its place. May be empty to delete." },
+        replace_all: {
+          type: "boolean",
+          description:
+            "Replace every occurrence instead of requiring a unique match. " +
+            "Only set it when you really mean to change all of them.",
+        },
       },
       required: ["path", "old_string", "new_string"],
     },
@@ -95,15 +100,51 @@ function editTool(host: Host): Tool {
       const filePath = String(args.path);
       const oldString = String(args.old_string);
       const newString = String(args.new_string);
+      const replaceAll = args.replace_all === true;
 
-      const content = await host.read(filePath);
+      // An empty string matches everywhere, so it identifies nothing (and would loop forever below).
+      if (oldString === "") {
+        throw new Error("old_string must not be empty; it identifies the text to replace");
+      }
+      if (oldString === newString) {
+        throw new Error("old_string and new_string are identical; nothing would change");
+      }
+
+      let content: string;
+      try {
+        content = await host.read(filePath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`file not found: ${filePath}; use write to create a new file`);
+        }
+        throw err;
+      }
+
       const at = content.indexOf(oldString);
       if (at === -1) {
         throw new Error(`old_string not found in ${filePath}; read the file again and copy the text exactly`);
       }
-      const updated = content.slice(0, at) + newString + content.slice(at + oldString.length);
+
+      // Count non-overlapping matches, scanning left to right.
+      let count = 0;
+      for (let from = at; from !== -1; from = content.indexOf(oldString, from + oldString.length)) {
+        count += 1;
+      }
+      if (count > 1 && !replaceAll) {
+        throw new Error(
+          `old_string found ${count} matches in ${filePath}; include more surrounding text so it is unique, ` +
+            "or set replace_all to change every one",
+        );
+      }
+
+      // Splice or split/join, never String.replace: it would interpret "$&" and friends in newString.
+      const updated = replaceAll
+        ? content.split(oldString).join(newString)
+        : content.slice(0, at) + newString + content.slice(at + oldString.length);
       await host.write(filePath, updated);
-      return `edited ${filePath}`;
+
+      const line = content.slice(0, at).split("\n").length;
+      return `replaced ${count} occurrence${count === 1 ? "" : "s"} in ${filePath}, first at line ${line}`;
     },
   };
 }

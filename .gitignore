@@ -1,3 +1,6 @@
+# traces written by the CLI; read them with `npm run view`
+.harness/
+
 node_modules/
 .env
 .env.*

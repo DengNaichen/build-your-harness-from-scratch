@@ -12,6 +12,12 @@ export interface OpenAIConfig {
   apiKey: string;
   model: string;
   temperature?: number;
+  /**
+   * Sees the exact string about to go on the wire, synchronously, before fetch.
+   * It is the same string that is sent — never a second serialisation — so what
+   * you inspect is what the provider receives.
+   */
+  onRequest?: (body: string) => void;
 }
 
 /**
@@ -24,15 +30,29 @@ export class OpenAICompatibleModel implements ModelClient {
   private apiKey: string;
   private model: string;
   private temperature: number;
+  private onRequest?: (body: string) => void;
 
   constructor(cfg: OpenAIConfig) {
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
     this.apiKey = cfg.apiKey;
     this.model = cfg.model;
     this.temperature = cfg.temperature ?? 0.7;
+    this.onRequest = cfg.onRequest;
   }
 
   async complete(req: ModelRequest, opts: CompleteOptions = {}): Promise<ModelResponse> {
+    const body = JSON.stringify({
+      model: this.model,
+      stream: true,
+      temperature: this.temperature,
+      messages: toWire(req.system, req.messages),
+      tools: req.tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.inputSchema },
+      })),
+    });
+    this.onRequest?.(body);
+
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -40,21 +60,12 @@ export class OpenAICompatibleModel implements ModelClient {
         authorization: `Bearer ${this.apiKey}`,
       },
       signal: opts.signal,
-      body: JSON.stringify({
-        model: this.model,
-        stream: true,
-        temperature: this.temperature,
-        messages: toWire(req.system, req.messages),
-        tools: req.tools.map((t) => ({
-          type: "function",
-          function: { name: t.name, description: t.description, parameters: t.inputSchema },
-        })),
-      }),
+      body,
     });
 
     if (!res.ok || !res.body) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`model request failed: HTTP ${res.status}\n${body.slice(0, 2000)}`);
+      const text = await res.text().catch(() => "");
+      throw new Error(`model request failed: HTTP ${res.status}\n${text.slice(0, 2000)}`);
     }
 
     return await readStream(res.body, opts.onDelta);

@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/cli.ts",
     "demo": "node src/cli.ts --demo",
+    "view": "node src/view.ts",
     "test": "node --test test/*.test.ts"
   }
 }

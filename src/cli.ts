@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout, argv } from "node:process";
 import path from "node:path";
 
+import { ContextTracker, describeContext } from "./context.ts";
 import { createLocalHost } from "./host.ts";
 import { runTurn } from "./loop.ts";
 import { createTools } from "./tools.ts";
@@ -34,10 +35,30 @@ const model = demo ? demoModel() : realModel();
 console.log(`harness G0.1 · root=${root}`);
 console.log(`model: ${demo ? "fake (offline demo)" : process.env.HARNESS_MODEL ?? "deepseek-chat"}`);
 if (!demo) console.log(`trace: ${traceBase}  (另开终端: npm run view)`);
-console.log('enter 发送 · 行尾 \\ 续行 · /reset 清空历史 · Ctrl-C 中断当前回合 · exit 退出\n');
 
 const host = createLocalHost(root);
 const tools = createTools(host);
+
+// Project context is re-read at the start of every turn, so editing AGENTS.md
+// takes effect on your next message instead of on the next restart. It describes
+// the workspace, not the conversation, so /reset leaves it alone. No AGENTS.md
+// means an identical prompt to the one this harness sent before the feature.
+const context = new ContextTracker(host, SYSTEM_PROMPT, "");
+let reloads = 0;
+
+async function reloadContext(): Promise<void> {
+  try {
+    if (!(await context.refresh())) return; // unchanged: say nothing, send the same bytes
+    console.log(describeContext(context.result) + (reloads++ ? "  ← reloaded" : ""));
+  } catch (err) {
+    // A broken or unreadable context file must never be the reason a session dies.
+    console.log(`context: FAILED to reload (${err instanceof Error ? err.message : String(err)}) — still using the previous one`);
+  }
+}
+
+await reloadContext();
+console.log('enter 发送 · 行尾 \\ 续行 · /reset 清空历史 · Ctrl-C 中断当前回合 · exit 退出\n');
+
 const transcript: TranscriptEntry[] = [];
 const renderer = createReplRenderer();
 const terminal = stdin.isTTY === true;
@@ -92,6 +113,10 @@ for await (const raw of rl) {
     continue;
   }
 
+  // Pick up AGENTS.md edits made since the last turn, before the first request
+  // of this one — so the prompt is stable for every request inside it.
+  await reloadContext();
+
   transcript.push({ role: "user", content: message });
 
   controller = new AbortController();
@@ -100,7 +125,7 @@ for await (const raw of rl) {
   try {
     const answer = await runTurn({
       model,
-      system: SYSTEM_PROMPT,
+      system: context.systemPrompt,
       tools,
       transcript,
       root,

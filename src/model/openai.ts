@@ -1,4 +1,11 @@
-import type { ModelClient, ModelRequest, ModelResponse, ToolCall, TranscriptEntry } from "../types.ts";
+import type {
+  CompleteOptions,
+  ModelClient,
+  ModelRequest,
+  ModelResponse,
+  ToolCall,
+  TranscriptEntry,
+} from "../types.ts";
 
 export interface OpenAIConfig {
   baseUrl: string;
@@ -25,13 +32,14 @@ export class OpenAICompatibleModel implements ModelClient {
     this.temperature = cfg.temperature ?? 0.7;
   }
 
-  async complete(req: ModelRequest): Promise<ModelResponse> {
+  async complete(req: ModelRequest, opts: CompleteOptions = {}): Promise<ModelResponse> {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
+      signal: opts.signal,
       body: JSON.stringify({
         model: this.model,
         stream: true,
@@ -49,7 +57,7 @@ export class OpenAICompatibleModel implements ModelClient {
       throw new Error(`model request failed: HTTP ${res.status}\n${body.slice(0, 2000)}`);
     }
 
-    return await readStream(res.body);
+    return await readStream(res.body, opts.onDelta);
   }
 }
 
@@ -78,7 +86,10 @@ function toWire(system: string, messages: TranscriptEntry[]): unknown[] {
 
 type Partial = { id?: string; name?: string; args: string };
 
-async function readStream(body: ReadableStream<Uint8Array>): Promise<ModelResponse> {
+async function readStream(
+  body: ReadableStream<Uint8Array>,
+  onDelta?: (text: string) => void,
+): Promise<ModelResponse> {
   const decoder = new TextDecoder();
   const pending = new Map<number, Partial>();
   let text = "";
@@ -99,7 +110,10 @@ async function readStream(body: ReadableStream<Uint8Array>): Promise<ModelRespon
     const delta = chunk?.choices?.[0]?.delta;
     if (!delta) return;
 
-    if (typeof delta.content === "string") text += delta.content;
+    if (typeof delta.content === "string" && delta.content) {
+      text += delta.content;
+      onDelta?.(delta.content);
+    }
 
     for (const tc of delta.tool_calls ?? []) {
       const slot = pending.get(tc.index ?? 0) ?? { args: "" };

@@ -43,6 +43,8 @@ export interface Tool {
 
 export interface ToolContext {
   root: string;
+  /** Present when the turn can be interrupted; long-running tools should honour it. */
+  signal?: AbortSignal;
 }
 
 export interface ModelRequest {
@@ -57,9 +59,20 @@ export interface ModelResponse {
 }
 
 /**
+ * Per-call knobs that must not leak into ModelRequest: one is how the human
+ * sees the answer, the other is how the human stops it.
+ */
+export interface CompleteOptions {
+  /** Aborting rejects `complete` with an error whose name is "AbortError". */
+  signal?: AbortSignal;
+  /** Called for every streamed text fragment. Implementations may ignore it. */
+  onDelta?: (text: string) => void;
+}
+
+/**
  * The only place a model provider touches the rest of the system.
  * Swapping DeepSeek for a local model means writing one more class here.
  */
 export interface ModelClient {
-  complete(req: ModelRequest): Promise<ModelResponse>;
+  complete(req: ModelRequest, opts?: CompleteOptions): Promise<ModelResponse>;
 }

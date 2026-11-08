@@ -8,6 +8,7 @@ import { createTools } from "./tools.ts";
 import type { TranscriptEntry } from "./types.ts";
 import { FakeModel } from "./model/fake.ts";
 import { OpenAICompatibleModel } from "./model/openai.ts";
+import { createReplRenderer } from "./renderer/repl.ts";
 
 const SYSTEM_PROMPT = `You are a coding agent working inside a single workspace directory.
 
@@ -17,51 +18,94 @@ Rules:
 - Prefer running commands and tests over guessing.
 - Keep replies short. The user sees tool output already.`;
 
+const PROMPT = "› ";
+const CONTINUATION = "  … ";
+const INTERRUPTED = "[interrupted]";
+
 const root = path.resolve(process.env.HARNESS_ROOT ?? process.cwd());
 const demo = argv.includes("--demo") || !process.env.HARNESS_API_KEY;
-
 const model = demo ? demoModel() : realModel();
 
-console.log(`harness G0 · root=${root}`);
-console.log(`model: ${demo ? "fake (offline demo)" : `${process.env.HARNESS_MODEL ?? "deepseek-chat"}`}`);
-console.log('type a message, "/reset" to clear history, "exit" to quit\n');
+console.log(`harness G0.1 · root=${root}`);
+console.log(`model: ${demo ? "fake (offline demo)" : process.env.HARNESS_MODEL ?? "deepseek-chat"}`);
+console.log('enter 发送 · 行尾 \\ 续行 · /reset 清空历史 · Ctrl-C 中断当前回合 · exit 退出\n');
 
 const host = createLocalHost(root);
 const tools = createTools(host);
 const transcript: TranscriptEntry[] = [];
-const rl = createInterface({ input: stdin, output: stdout });
+const renderer = createReplRenderer();
+const terminal = stdin.isTTY === true;
+
+const rl = createInterface({ input: stdin, output: stdout, terminal });
+let controller: AbortController | null = null;
+
+rl.on("SIGINT", () => {
+  if (controller) {
+    controller.abort();
+  } else {
+    stdout.write("\n");
+    rl.close();
+  }
+});
+
+if (terminal) {
+  rl.setPrompt(PROMPT);
+  rl.prompt();
+}
+
+let buffer = "";
 
 for await (const raw of rl) {
-  const line = raw.trim();
-  if (!line) continue;
-  if (line === "exit" || line === "quit") break;
-  if (line === "/reset") {
-    transcript.length = 0;
-    console.log("(history cleared)\n");
+  const line = raw.replace(/\r$/, "");
+
+  // Multiline: a trailing backslash keeps reading.
+  if (line.endsWith("\\")) {
+    buffer += `${line.slice(0, -1)}\n`;
+    if (terminal) {
+      rl.setPrompt(CONTINUATION);
+      rl.prompt();
+    }
     continue;
   }
 
-  transcript.push({ role: "user", content: line });
+  const message = buffer + line;
+  const wasMultiline = buffer !== "";
+  buffer = "";
+  if (wasMultiline && terminal) rl.setPrompt(PROMPT);
 
+  if (!message.trim()) {
+    if (terminal) rl.prompt();
+    continue;
+  }
+  if (message.trim() === "exit" || message.trim() === "quit") break;
+  if (message.trim() === "/reset") {
+    transcript.length = 0;
+    console.log("(history cleared)\n");
+    if (terminal) rl.prompt();
+    continue;
+  }
+
+  transcript.push({ role: "user", content: message });
+
+  controller = new AbortController();
+  renderer.beginTurn();
   try {
-    await runTurn({
+    const answer = await runTurn({
       model,
       system: SYSTEM_PROMPT,
       tools,
       transcript,
       root,
-      onEvent: (e) => {
-        if (e.type === "assistant") {
-          console.log(`\n${e.text}\n`);
-        } else if (e.type === "tool_start") {
-          console.log(`  ⚙ ${e.call.name} ${preview(e.call.args)}`);
-        } else {
-          console.log(`    ${e.ok ? "✓" : "✗"} ${e.ms}ms`);
-        }
-      },
+      signal: controller.signal,
+      onDelta: (text) => renderer.onDelta(text),
+      onEvent: (event) => renderer.onEvent(event),
     });
+    if (answer === INTERRUPTED) stdout.write("\n  ⟂ 已中断\n\n");
   } catch (err) {
-    console.error(`\n[error] ${err instanceof Error ? err.message : String(err)}\n`);
+    renderer.onError(err);
+  } finally {
+    controller = null;
+    if (terminal) rl.prompt();
   }
 }
 
@@ -84,9 +128,4 @@ function demoModel() {
         "设置 HARNESS_API_KEY 之后，这里换成真模型，其余代码一行不变。",
     },
   ]);
-}
-
-function preview(args: unknown): string {
-  const s = JSON.stringify(args ?? {});
-  return s.length > 110 ? `${s.slice(0, 110)}…` : s;
 }

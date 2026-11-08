@@ -28,8 +28,11 @@ function bashTool(host: Host): Tool {
       },
       required: ["command"],
     },
-    async run(args) {
-      return host.run(String(args.command), { timeoutMs: Number(args.timeout_ms) || undefined });
+    async run(args, ctx) {
+      return host.run(String(args.command), {
+        timeoutMs: Number(args.timeout_ms) || undefined,
+        signal: ctx.signal,
+      });
     },
   };
 }

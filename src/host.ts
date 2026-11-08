@@ -12,7 +12,7 @@ const OUTPUT_CAP = 400_000;
  */
 export interface Host {
   root: string;
-  run(command: string, opts?: { timeoutMs?: number }): Promise<string>;
+  run(command: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<string>;
   read(p: string): Promise<string>;
   write(p: string, content: string): Promise<string>;
   exists(p: string): Promise<boolean>;
@@ -28,6 +28,12 @@ export function resolveInRoot(root: string, p: string): string {
   return abs;
 }
 
+export function abortError(): Error {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
+}
+
 export function createLocalHost(root: string): Host {
   const base = path.resolve(root);
 
@@ -36,6 +42,9 @@ export function createLocalHost(root: string): Host {
 
     async run(command, opts = {}) {
       const timeoutMs = opts.timeoutMs ?? 120_000;
+      const signal = opts.signal;
+      if (signal?.aborted) throw abortError();
+
       return new Promise<string>((resolve, reject) => {
         const child = spawn("/bin/bash", ["-lc", command], {
           cwd: base,
@@ -45,11 +54,23 @@ export function createLocalHost(root: string): Host {
         let stdout = "";
         let stderr = "";
         let killedForTimeout = false;
+        let killedForAbort = false;
+
+        const onAbort = () => {
+          killedForAbort = true;
+          child.kill("SIGKILL");
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
 
         const timer = setTimeout(() => {
           killedForTimeout = true;
           child.kill("SIGKILL");
         }, timeoutMs);
+
+        const cleanup = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+        };
 
         child.stdout.on("data", (d: Buffer) => {
           if (stdout.length < OUTPUT_CAP) stdout += d.toString();
@@ -59,12 +80,15 @@ export function createLocalHost(root: string): Host {
         });
 
         child.on("error", (err) => {
-          clearTimeout(timer);
+          cleanup();
           reject(err);
         });
 
         child.on("close", (code) => {
-          clearTimeout(timer);
+          cleanup();
+          // An abort must look like an abort, not like a command that just exited.
+          if (killedForAbort) return reject(abortError());
+
           const parts = [`exit: ${code ?? "signal"}`];
           if (killedForTimeout) parts.push(`note: killed after ${timeoutMs}ms timeout`);
           parts.push("--- stdout ---", truncate(stdout) || "(empty)");

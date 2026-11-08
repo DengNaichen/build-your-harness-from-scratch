@@ -12,6 +12,7 @@
 
 - 这是对话的唯一真相。模型客户端只负责把它翻译成 wire 格式，不许反向修改它。
 - **不变量**：一条带 `toolCalls` 的 assistant 记录，后面必须紧跟相同数量、相同顺序的 `role: "tool"` 记录，每条带对应的 `toolCallId`。上下文压缩也必须保住这条，否则 provider 会直接拒绝历史。
+- **中断同样受这条约束**：Ctrl-C 打断时，已经宣布但没执行的调用会被补上 `[interrupted by user]` 的结果，而不是直接丢下（见 `loop.ts` 的 `interrupted()`）。
 - 改变形状 → 必须 bump `TRANSCRIPT_VERSION`（在 `src/types.ts`），并在这里写一段迁移说明。
 
 ## 2. Tool
@@ -33,6 +34,16 @@
 - 所有副作用必须经过这里。`loop.ts` 和 `tools.ts` 不许直接 `fs.` 或 `child_process`。
 - 这条为将来换沙箱/容器/远程执行留的口子，一旦破了就再也补不回来。
 
-## 测试是第四次契约
+## 4. CompleteOptions（只增不改）
+
+```ts
+complete(req, { signal?, onDelta? })
+```
+
+- 这两个是**可选**参数：不实现 `onDelta` 的模型照样能跑，只是没有流式；不响应 `signal` 的模型只是不能中断。
+- 中断约定：abort 之后 `complete` 必须以 `name === "AbortError"` 的异常结束，**不能**返回一个"看起来正常"的空响应。`host.run` 同理——被杀掉的命令必须以 abort 结束，而不是返回 `exit: signal`。
+- 不允许把 UI 状态（光标、颜色、行数）塞进这里。渲染层只消费 `onDelta` 和 `LoopEvent`。
+
+## 测试是最后一道契约
 
 `node --test` 必须永远能离线通过。任何一代如果让测试变红、然后你去改测试而不是改代码——那就是退化，不是进步。

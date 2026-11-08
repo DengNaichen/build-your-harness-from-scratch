@@ -1,6 +1,6 @@
-# Harness G0
+# Harness G0.1
 
-一个**零依赖、零构建**的最小 agent harness。大约 500 行，包含一个循环、三个工具、一个假模型、一个 OpenAI 兼容的流式客户端，以及一套离线回归测试。
+一个**零依赖、零构建**的最小 agent harness。大约 700 行，包含一个循环、三个工具、一个假模型、一个 OpenAI 兼容的流式客户端、一个终端渲染层，以及一套离线回归测试。
 
 ```bash
 cd harness
@@ -27,18 +27,34 @@ node src/cli.ts
 
 ```
 src/
-  types.ts        三个契约：TranscriptEntry / Tool / ModelClient
-  loop.ts         全部逻辑：调模型 → 执行工具 → 回填 → 再调
-  host.ts         唯一有副作用的地方：文件、子进程、路径边界
-  tools.ts        bash / read / write
+  types.ts          三个契约：TranscriptEntry / Tool / ModelClient（+ CompleteOptions）
+  loop.ts           全部逻辑：调模型 → 执行工具 → 回填 → 再调
+  host.ts           唯一有副作用的地方：文件、子进程、路径边界、中断
+  tools.ts          bash / read / write
   model/
-    fake.ts       脚本化模型，测试靠它
-    openai.ts     手写 SSE 流式客户端，含 tool_call 增量拼接
-  cli.ts          REPL
+    fake.ts         脚本化模型，测试靠它
+    openai.ts       手写 SSE 流式客户端，含 tool_call 增量拼接
+  renderer/
+    repl.ts         终端渲染：流式、颜色、折叠。loop.ts 不知道它存在
+  cli.ts            组装 + REPL 输入
 test/
-  loop.test.ts    循环不变量：工具顺序、maxSteps、错误兜底、路径越界
-  openai.test.ts  SSE 解析：起一个假服务器，连 tool_call 跨帧拼接一起测
+  loop.test.ts      循环不变量：工具顺序、maxSteps、错误兜底、路径越界
+  abort.test.ts     中断之后 transcript 仍然合法
+  openai.test.ts    SSE 解析：假服务器 + tool_call 跨帧拼接
+  renderer.test.ts  折叠、去框、流式文本不重复打印
 ```
+
+## 交互
+
+| 操作 | 作用 |
+|---|---|
+| `Enter` | 发送 |
+| 行尾 `\` | 续行，可以写多行 prompt |
+| `Ctrl-C` | 中断当前回合，**不退出**；空闲时按才退出 |
+| `/reset` | 清空历史 |
+| `exit` | 退出 |
+
+工具结果在终端只画前 3 行，后面用 `… +N 行` 收起来——**模型拿到的是全文**，折叠只影响你眼睛看到的。`NO_COLOR=1` 或重定向到管道时自动关颜色。
 
 ## 三个不许变的东西
 
@@ -50,10 +66,17 @@ test/
 |---|---|---|
 | `edit` / `glob` / `grep` | G1 | 先用 `write` 整文件覆盖，你才会真正感觉到"该有 edit 了" |
 | 上下文压缩 | 第一次撞到窗口上限时 | 没有真实的长对话，设计出来的都是猜的 |
-| 流式打印 | G1 | 现在客户端收完整个流才返回，够用 |
+| `-p` 单次执行模式 | 想让 harness 进脚本 / 被别的 agent 调用时 | 交互先顺手，非交互是第二步 |
 | 审批 / 权限 | 让它碰真实仓库之前 | 现在有 `HARNESS_ROOT` 兜底 |
 | supervisor + 自重启 | G3 | 自举到那一代才需要 |
+| 全屏 TUI | 富 REPL 用一周后仍然想"往回翻" | 见下方"为什么不是 TUI" |
 | UI / 多 agent / 记忆 | 不知道，可能是永远 | 有具体痛之前都是负债 |
+
+### 为什么不是全屏 TUI
+
+渲染层和内核是分开的：`loop.ts` 只发事件，`renderer/repl.ts` 负责画。要上全屏 TUI，就是再写一个 `Renderer`，`loop.ts` 一行不改。
+
+现在不上，是因为 TUI 真正多出来的能力只有"回看/展开"；而它要自己管 raw mode、光标、resize 和**中文宽字符对齐**（CJK 占两列，手写渲染极容易错位），成本远高于收益。等富 REPL 真的让你难受了，再上。
 
 ## 怎么加一个工具
 
@@ -65,6 +88,7 @@ test/
 
 - [ ] `edit` 工具（字符串替换，必须要求 old_string 唯一）
 - [ ] `glob` / `grep`
-- [ ] 流式打印 + token 计数
+- [ ] token 计数与成本显示
+- [ ] `-p` 单次执行模式（对齐 `dsh headless`）
 - [ ] transcript 落盘（JSONL），支持 `--resume`
 - [ ] 把 `loop.test.ts` 扩成 replay 测试：录制真实 transcript，离线重放

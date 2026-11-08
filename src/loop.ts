@@ -7,7 +7,7 @@ export const DEFAULT_MAX_STEPS = 40;
 export type LoopEvent =
   | { type: "assistant"; text: string }
   | { type: "tool_start"; call: ToolCall }
-  | { type: "tool_end"; call: ToolCall; ok: boolean; ms: number };
+  | { type: "tool_end"; call: ToolCall; ok: boolean; ms: number; result: string };
 
 export interface RunTurnOptions {
   model: ModelClient;
@@ -18,6 +18,10 @@ export interface RunTurnOptions {
   root: string;
   maxSteps?: number;
   onEvent?: (event: LoopEvent) => void;
+  /** Streamed assistant text, forwarded from the model client. */
+  onDelta?: (text: string) => void;
+  /** Ctrl-C. Aborting mid-turn still leaves a valid transcript (see `interrupted`). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -25,16 +29,24 @@ export interface RunTurnOptions {
  *
  * Invariant: an assistant entry with toolCalls is always followed by exactly one
  * tool entry per call, in order. Compaction later must preserve that or the
- * provider will reject the history.
+ * provider will reject the history — and so must an interrupt, which is why
+ * aborting fills in the unanswered calls instead of just bailing out.
  */
 export async function runTurn(opts: RunTurnOptions): Promise<string> {
-  const { model, system, tools, transcript, root } = opts;
+  const { model, system, tools, transcript, root, signal } = opts;
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
   const emit = opts.onEvent ?? (() => {});
   const registry = new Map(tools.map((t) => [t.name, t]));
 
   for (let step = 0; step < maxSteps; step++) {
-    const reply = await model.complete({ system, messages: transcript, tools });
+    let reply;
+    try {
+      reply = await model.complete({ system, messages: transcript, tools }, { signal, onDelta: opts.onDelta });
+    } catch (err) {
+      // Aborted before the model said anything: nothing to repair.
+      if (isAbort(err, signal)) return interrupted(transcript, [], 0);
+      throw err;
+    }
 
     transcript.push({
       role: "assistant",
@@ -46,17 +58,26 @@ export async function runTurn(opts: RunTurnOptions): Promise<string> {
     // No tool calls means the model is done talking.
     if (reply.toolCalls.length === 0) return reply.text;
 
-    for (const call of reply.toolCalls) {
+    const calls = reply.toolCalls;
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
       emit({ type: "tool_start", call });
       const started = Date.now();
-      const { result, ok } = await execute(call, registry, root);
-      emit({ type: "tool_end", call, ok, ms: Date.now() - started });
 
+      let outcome: { result: string; ok: boolean };
+      try {
+        outcome = await execute(call, registry, root, signal);
+      } catch (err) {
+        if (isAbort(err, signal)) return interrupted(transcript, calls, i);
+        throw err;
+      }
+
+      emit({ type: "tool_end", call, ok: outcome.ok, ms: Date.now() - started, result: outcome.result });
       transcript.push({
         role: "tool",
         toolCallId: call.id,
         name: call.name,
-        content: clamp(result),
+        content: clamp(outcome.result),
       });
     }
   }
@@ -66,10 +87,31 @@ export async function runTurn(opts: RunTurnOptions): Promise<string> {
   return note;
 }
 
+/**
+ * Keep the transcript legal after a Ctrl-C: every call the assistant announced
+ * gets a tool entry, even the ones that never ran.
+ */
+function interrupted(
+  transcript: TranscriptEntry[],
+  calls: ToolCall[],
+  from: number,
+): string {
+  for (let i = from; i < calls.length; i++) {
+    transcript.push({
+      role: "tool",
+      toolCallId: calls[i].id,
+      name: calls[i].name,
+      content: "[interrupted by user]",
+    });
+  }
+  return "[interrupted]";
+}
+
 async function execute(
   call: ToolCall,
   registry: Map<string, Tool>,
   root: string,
+  signal?: AbortSignal,
 ): Promise<{ result: string; ok: boolean }> {
   const tool = registry.get(call.name);
   if (!tool) {
@@ -83,11 +125,18 @@ async function execute(
   if (invalid) return { ok: false, result: `error: invalid arguments for ${call.name}: ${invalid}` };
 
   try {
-    return { ok: true, result: await tool.run(call.args, { root }) };
+    return { ok: true, result: await tool.run(call.args, { root, signal }) };
   } catch (err) {
+    // An abort is not a tool failure; let the loop repair the transcript.
+    if (isAbort(err, signal)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, result: `error: ${call.name} failed: ${message}` };
   }
+}
+
+export function isAbort(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return typeof err === "object" && err !== null && (err as Error).name === "AbortError";
 }
 
 /**

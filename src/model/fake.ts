@@ -1,4 +1,4 @@
-import type { ModelClient, ModelRequest, ModelResponse, ToolCall } from "../types.ts";
+import type { CompleteOptions, ModelClient, ModelRequest, ModelResponse, ToolCall } from "../types.ts";
 
 export interface ScriptedTurn {
   text?: string;
@@ -22,11 +22,17 @@ export class FakeModel implements ModelClient {
     this.script = script;
   }
 
-  async complete(req: ModelRequest): Promise<ModelResponse> {
+  async complete(req: ModelRequest, opts: CompleteOptions = {}): Promise<ModelResponse> {
+    opts.signal?.throwIfAborted();
     this.requests.push({ ...req, messages: [...req.messages] });
+
     const turn = this.script[this.cursor++] ?? {
       text: "[fake model: script exhausted]",
     };
+    const text = turn.text ?? "";
+
+    // Emit the text as one delta so the streaming path is exercised offline too.
+    if (text) opts.onDelta?.(text);
 
     const toolCalls: ToolCall[] = (turn.toolCalls ?? []).map((c) => ({
       id: `call_${++this.seq}`,
@@ -34,6 +40,6 @@ export class FakeModel implements ModelClient {
       args: c.args ?? {},
     }));
 
-    return { text: turn.text ?? "", toolCalls };
+    return { text, toolCalls };
   }
 }

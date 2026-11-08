@@ -9,6 +9,7 @@ import type { TranscriptEntry } from "./types.ts";
 import { FakeModel } from "./model/fake.ts";
 import { OpenAICompatibleModel } from "./model/openai.ts";
 import { createReplRenderer } from "./renderer/repl.ts";
+import { createTrace, defaultTraceDir, nullTrace } from "./trace.ts";
 
 const SYSTEM_PROMPT = `You are a coding agent working inside a single workspace directory.
 
@@ -24,10 +25,15 @@ const INTERRUPTED = "[interrupted]";
 
 const root = path.resolve(process.env.HARNESS_ROOT ?? process.cwd());
 const demo = argv.includes("--demo") || !process.env.HARNESS_API_KEY;
+const traceBase = defaultTraceDir();
+// Demo mode has no real requests to record. /reset starts a new trace.
+const newTrace = () => (demo ? nullTrace : createTrace(traceBase, { root }));
+let trace = newTrace();
 const model = demo ? demoModel() : realModel();
 
 console.log(`harness G0.1 · root=${root}`);
 console.log(`model: ${demo ? "fake (offline demo)" : process.env.HARNESS_MODEL ?? "deepseek-chat"}`);
+if (!demo) console.log(`trace: ${traceBase}  (另开终端: npm run view)`);
 console.log('enter 发送 · 行尾 \\ 续行 · /reset 清空历史 · Ctrl-C 中断当前回合 · exit 退出\n');
 
 const host = createLocalHost(root);
@@ -80,6 +86,7 @@ for await (const raw of rl) {
   if (message.trim() === "exit" || message.trim() === "quit") break;
   if (message.trim() === "/reset") {
     transcript.length = 0;
+    trace = newTrace();
     console.log("(history cleared)\n");
     if (terminal) rl.prompt();
     continue;
@@ -89,6 +96,7 @@ for await (const raw of rl) {
 
   controller = new AbortController();
   renderer.beginTurn();
+  trace.beginTurn(message);
   try {
     const answer = await runTurn({
       model,
@@ -101,7 +109,10 @@ for await (const raw of rl) {
       onEvent: (event) => renderer.onEvent(event),
     });
     if (answer === INTERRUPTED) stdout.write("\n  ⟂ 已中断\n\n");
+    // loop.ts reports "stopped at maxSteps" as a string beginning "[stopped:"
+    trace.endTurn(answer === INTERRUPTED ? "interrupted" : answer.startsWith("[stopped:") ? "max_steps" : "answered");
   } catch (err) {
+    trace.endTurn("error", err instanceof Error ? err.message : String(err));
     renderer.onError(err);
   } finally {
     controller = null;
@@ -116,6 +127,7 @@ function realModel() {
     baseUrl: process.env.HARNESS_BASE_URL ?? "https://api.deepseek.com",
     apiKey: process.env.HARNESS_API_KEY!,
     model: process.env.HARNESS_MODEL ?? "deepseek-chat",
+    onRequest: (body) => trace.onRequest(body),
   });
 }
 

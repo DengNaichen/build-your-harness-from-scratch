@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>harness trace</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #fff; --text: #1c1917; --dim: #78716c; --line: #e7e5e4;
+    --user: #2563eb; --assistant: #7c3aed; --tool: #0d9488; --system: #b45309;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --code: #f5f5f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --panel: #292524; --text: #e7e5e4; --dim: #a8a29e; --line: #44403c;
+      --user: #60a5fa; --assistant: #a78bfa; --tool: #2dd4bf; --system: #fbbf24;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --code: #1c1917;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
+  aside { border-right: 1px solid var(--line); overflow: auto; background: var(--panel); }
+  main { overflow: auto; padding: 20px 28px 60px; }
+  h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 16px 14px 6px; }
+  .top { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .top b { font-size: 15px; }
+  .top label { font-size: 12px; color: var(--dim); cursor: pointer; }
+  .item { padding: 7px 14px; cursor: pointer; border-left: 3px solid transparent; }
+  .item:hover { background: var(--code); }
+  .item.sel { background: var(--code); border-left-color: var(--user); }
+  .item .l1 { display: flex; justify-content: space-between; gap: 8px; }
+  .item .l2 { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 11px; padding: 0 7px; border-radius: 9px; border: 1px solid currentColor; white-space: nowrap; }
+  .answered { color: var(--ok); } .running { color: var(--warn); animation: pulse 1.4s infinite; }
+  .interrupted, .max_steps { color: var(--warn); } .error { color: var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .head h1 { font-size: 18px; margin: 0 0 4px; display: flex; gap: 10px; align-items: center; }
+  .meta { color: var(--dim); font-size: 12px; }
+  .ask { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 12px 0; white-space: pre-wrap; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 14px 0; overflow: hidden; }
+  .card > .hd { padding: 8px 14px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; justify-content: space-between; gap: 12px; }
+  .card > .hd span { font-weight: 400; color: var(--dim); font-size: 12px; }
+  .msg { padding: 8px 14px; border-top: 1px solid var(--line); }
+  .card > .hd + .msg, .card > details:first-child > summary + .msg { border-top: 0; }
+  .role { font: 600 11px ui-monospace, Menlo, monospace; text-transform: uppercase; letter-spacing: .05em; }
+  .role.user { color: var(--user); } .role.assistant { color: var(--assistant); }
+  .role.tool { color: var(--tool); } .role.system { color: var(--system); }
+  pre, .text { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.5 ui-monospace, Menlo, monospace; }
+  pre.box { background: var(--code); border-radius: 6px; padding: 8px 10px; max-height: 420px; overflow: auto; }
+  .call { margin-top: 6px; } .call b { color: var(--assistant); font-family: ui-monospace, Menlo, monospace; }
+  details { padding: 0; } details > summary { cursor: pointer; color: var(--dim); padding: 6px 14px; font-size: 12.5px; }
+  details > summary:hover { color: var(--text); }
+  details.inline > summary { padding: 0; margin-top: 4px; }
+  .note { color: var(--dim); font-size: 12px; padding: 8px 14px; }
+  .empty { color: var(--dim); padding: 60px 0; text-align: center; }
+  .tool-def { padding: 6px 14px; border-top: 1px solid var(--line); }
+  .tool-def code { font: 600 12.5px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="top"><b>trace</b><label><input type="checkbox" id="follow" checked> 跟随最新</label></div>
+    <h2>Traces</h2><div id="traces"></div>
+    <h2>Turns</h2><div id="turns"></div>
+  </aside>
+  <main id="main"><div class="empty">等待数据…</div></main>
+</div>
+
+<script>
+const state = { traces: [], traceId: null, trace: null, turnName: null, turn: null, follow: true };
+const openKeys = new Set(); // <details> the user has opened survive re-renders
+let signature = "";
+
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return e; // text always goes in as text nodes, never HTML
+}
+const get = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(url + " → " + r.status); return r.json(); };
+const kb = (n) => (n < 1024 ? n + " B" : (n / 1024).toFixed(1) + " KB");
+const time = (iso) => (iso ? new Date(iso).toLocaleTimeString() : "");
+const base = (p) => (p || "").split("/").filter(Boolean).pop() || p || "";
+const pretty = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; } };
+
+function badge(outcome) { return h("span", { class: "badge " + outcome }, outcome); }
+
+// A <details> whose open/closed state is remembered by key.
+function fold(key, summary, body, cls) {
+  const d = h("details", { class: cls || "", open: openKeys.has(key) }, h("summary", {}, summary), body);
+  d.addEventListener("toggle", () => (d.open ? openKeys.add(key) : openKeys.delete(key)));
+  return d;
+}
+
+function message(m, key) {
+  const box = h("div", { class: "msg" }, h("span", { class: "role " + m.role }, m.role));
+  const text = typeof m.content === "string" ? m.content : m.content == null ? "" : JSON.stringify(m.content);
+  if (text) {
+    if (text.length > 1500) box.append(fold(key, `${text.length} 字符，点击展开`, h("pre", { class: "box" }, text), "inline"));
+    else box.append(h("div", { class: "text" }, text));
+  }
+  for (const c of m.tool_calls || []) {
+    box.append(h("div", { class: "call" }, "→ ", h("b", {}, c.function.name), h("pre", { class: "box" }, pretty(c.function.arguments))));
+  }
+  return box;
+}
+
+function split(body) {
+  const messages = body.messages || [];
+  const sys = messages[0]?.role === "system" ? messages[0] : null;
+  return { sys, rest: sys ? messages.slice(1) : messages, tools: body.tools || [] };
+}
+
+function renderTurn(t, traceId) {
+  const { record, requests } = t;
+  const parts = requests.map(split);
+  const out = [];
+
+  const secs = record?.endedAt ? ((Date.parse(record.endedAt) - Date.parse(record.startedAt)) / 1000).toFixed(1) + "s" : "";
+  out.push(h("div", { class: "head" },
+    h("h1", {}, t.name, record && badge(record.outcome)),
+    h("div", { class: "meta" }, [`${requests.length} 个请求`, secs, record && time(record.startedAt)].filter(Boolean).join(" · "))));
+  if (record) out.push(h("div", { class: "ask" }, record.user));
+  if (record?.error) out.push(h("div", { class: "ask error" }, "error: " + record.error));
+  if (!parts.length) { out.push(h("div", { class: "empty" }, "这个 turn 还没有请求")); return out; }
+
+  // System prompt and tools: what the model is "born with" in every request.
+  const fp = (p) => JSON.stringify([p.sys, p.tools]);
+  const stable = parts.every((p) => fp(p) === fp(parts[0]));
+  const first = parts[0];
+  const ctx = h("div", { class: "card" },
+    h("div", { class: "hd" }, "每个请求都带着的东西", h("span", {}, stable ? "各步完全相同" : "⚠ 各步不同，见下方标注")));
+  if (first.sys) ctx.append(fold(`${traceId}/${t.name}/sys`, `system prompt · ${first.sys.content.length} 字符`, h("pre", { class: "box" }, first.sys.content)));
+  ctx.append(fold(`${traceId}/${t.name}/tools`, `tools · ${first.tools.length} 个`,
+    h("div", {}, first.tools.map((tool) => h("div", { class: "tool-def" },
+      h("code", {}, tool.function.name), h("div", { class: "text" }, tool.function.description),
+      fold(`${traceId}/${t.name}/tool/${tool.function.name}`, "参数 schema", h("pre", { class: "box" }, JSON.stringify(tool.function.parameters, null, 2)), "inline"))))));
+  out.push(ctx);
+
+  // Steps: each shows only what it added to the conversation.
+  let seen = 0;
+  parts.forEach((p, i) => {
+    const added = p.rest.slice(seen);
+    const changed = i > 0 && fp(p) !== fp(parts[i - 1]);
+    const bytes = JSON.stringify(requests[i]).length;
+    const card = h("div", { class: "card" },
+      h("div", { class: "hd" }, `step ${i + 1}`, h("span", {}, `${p.rest.length} 条消息（+${added.length}）· ${kb(bytes)}${changed ? " · ⚠ system 或 tools 变了" : ""}`)));
+
+    // The first step of a later turn resends everything said before: show that as history.
+    let start = 0;
+    if (i === 0) {
+      let lastUser = -1;
+      added.forEach((m, j) => { if (m.role === "user") lastUser = j; });
+      if (lastUser > 0) {
+        card.append(fold(`${traceId}/${t.name}/hist`, `前面 turn 的 ${lastUser} 条消息，原样重发`,
+          h("div", {}, added.slice(0, lastUser).map((m, j) => message(m, `${traceId}/${t.name}/hist/${j}`)))));
+        start = lastUser;
+      }
+    }
+    added.slice(start).forEach((m, j) => card.append(message(m, `${traceId}/${t.name}/${i}/${start + j}`)));
+    card.append(fold(`${traceId}/${t.name}/${i}/raw`, "原始请求 JSON", h("pre", { class: "box" }, JSON.stringify(requests[i], null, 2))));
+    out.push(card);
+    seen = p.rest.length;
+  });
+  return out;
+}
+
+function render() {
+  const traces = $("traces"), turns = $("turns"), main = $("main");
+  traces.replaceChildren(...state.traces.map((t) =>
+    h("div", { class: "item" + (t.id === state.traceId ? " sel" : ""), onclick: () => pick(t.id, null) },
+      h("div", { class: "l1" }, h("span", {}, time(t.startedAt) || t.id), h("span", { class: "meta" }, t.turns + " turns")),
+      h("div", { class: "l2" }, base(t.root) || t.id))));
+
+  const list = state.trace?.turns || [];
+  turns.replaceChildren(...list.map((t) =>
+    h("div", { class: "item" + (t.name === state.turnName ? " sel" : ""), onclick: () => pick(state.traceId, t.name) },
+      h("div", { class: "l1" }, h("span", {}, t.name.replace("turn-", "#")), t.record && badge(t.record.outcome)),
+      h("div", { class: "l2" }, (t.record?.user || "").replace(/\s+/g, " ") + " · " + t.steps + " 步"))));
+
+  const scroll = main.scrollTop;
+  if (state.turn) main.replaceChildren(...renderTurn(state.turn, state.traceId));
+  else main.replaceChildren(h("div", { class: "empty" }, state.traces.length ? "选一个 turn" : "还没有 trace — 用真模型聊一句话"));
+  main.scrollTop = scroll;
+}
+
+function pick(traceId, turnName) {
+  $("follow").checked = state.follow = false;
+  state.traceId = traceId;
+  state.turnName = turnName;
+  poll(true);
+}
+
+async function poll(force) {
+  try {
+    state.traces = await get("/api/traces");
+    if (state.follow && state.traces.length) state.traceId = state.traces[0].id;
+    if (!state.traceId && state.traces.length) state.traceId = state.traces[0].id;
+    state.trace = state.traceId ? await get("/api/traces/" + state.traceId) : null;
+    const names = (state.trace?.turns || []).map((t) => t.name);
+    if (state.follow || !names.includes(state.turnName)) state.turnName = names[names.length - 1] || null;
+    state.turn = state.turnName ? await get(`/api/traces/${state.traceId}/turns/${state.turnName}`) : null;
+
+    const sig = JSON.stringify([state.traces, state.trace, state.turn, state.traceId, state.turnName]);
+    if (force || sig !== signature) { signature = sig; render(); }
+  } catch (err) {
+    $("main").replaceChildren(h("div", { class: "empty" }, "连不上服务：" + err.message));
+    signature = "";
+  }
+}
+
+$("follow").addEventListener("change", (e) => { state.follow = e.target.checked; poll(true); });
+poll(true);
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

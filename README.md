@@ -1,6 +1,6 @@
 # Harness G0.1
 
-一个**零依赖、零构建**的最小 agent harness。大约 700 行，包含一个循环、三个工具、一个假模型、一个 OpenAI 兼容的流式客户端、一个终端渲染层，以及一套离线回归测试。
+一个**零依赖、零构建**的最小 agent harness。大约 700 行，包含一个循环、四个工具、一个假模型、一个 OpenAI 兼容的流式客户端、一个终端渲染层，以及一套离线回归测试。
 
 ```bash
 cd harness
@@ -30,7 +30,8 @@ src/
   types.ts          三个契约：TranscriptEntry / Tool / ModelClient（+ CompleteOptions）
   loop.ts           全部逻辑：调模型 → 执行工具 → 回填 → 再调
   host.ts           唯一有副作用的地方：文件、子进程、路径边界、中断
-  tools.ts          bash / read / write
+  tools.ts          bash / read / write / edit
+  context.ts        AGENTS.md / CLAUDE.md → system prompt，每个 turn 前重读（见 lessons/02）
   model/
     fake.ts         脚本化模型，测试靠它
     openai.ts       手写 SSE 流式客户端，含 tool_call 增量拼接
@@ -42,6 +43,7 @@ test/
   abort.test.ts     中断之后 transcript 仍然合法
   openai.test.ts    SSE 解析：假服务器 + tool_call 跨帧拼接
   renderer.test.ts  折叠、去框、流式文本不重复打印
+  context.test.ts   上下文路径规则：白名单、级联顺序、越界、兄弟目录
 ```
 
 ## 交互
@@ -64,7 +66,9 @@ test/
 
 | 缺的东西 | 什么时候加 | 为什么现在不加 |
 |---|---|---|
-| `edit` / `glob` / `grep` | G1 | 先用 `write` 整文件覆盖，你才会真正感觉到"该有 edit 了" |
+| `glob` / `grep` | G1 | 上下文注入只需要"叫得出名字的文件"，没有证据说该遍历目录 |
+| skills（lazy 上下文） | 有第二个 skill 时 | 一个 skill 直接写进 `AGENTS.md` 就行；索引与选择的成本要真的付过才知道 |
+| 上下文预算 / 截断 | 第一次被 `AGENTS.md` 吃满窗口时 | 先让它可见（`context: … KB, sent every request`），再决定截谁 |
 | 上下文压缩 | 第一次撞到窗口上限时 | 没有真实的长对话，设计出来的都是猜的 |
 | `-p` 单次执行模式 | 想让 harness 进脚本 / 被别的 agent 调用时 | 交互先顺手，非交互是第二步 |
 | 审批 / 权限 | 让它碰真实仓库之前 | 现在有 `HARNESS_ROOT` 兜底 |
@@ -86,7 +90,8 @@ test/
 
 ## 下一步（G1）
 
-- [ ] `edit` 工具（字符串替换，必须要求 old_string 唯一）
+- [x] `edit` 工具（字符串替换，必须要求 old_string 唯一）
+- [x] `AGENTS.md` / `CLAUDE.md` 注入上下文（见 lessons/02）
 - [ ] `glob` / `grep`
 - [ ] token 计数与成本显示
 - [ ] `-p` 单次执行模式（对齐 `dsh headless`）

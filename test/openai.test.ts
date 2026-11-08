@@ -80,7 +80,7 @@ test("streams text and reassembles tool_calls split across frames", async () => 
     assert.equal(received.stream, true);
     assert.deepEqual(
       received.tools.map((t: any) => t.function.name),
-      ["bash", "read", "write"],
+      tools.map((t) => t.name),
     );
   } finally {
     server.close();

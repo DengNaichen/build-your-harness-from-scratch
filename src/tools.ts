@@ -98,6 +98,9 @@ function editTool(host: Host): Tool {
 
       const content = await host.read(filePath);
       const at = content.indexOf(oldString);
+      if (at === -1) {
+        throw new Error(`old_string not found in ${filePath}; read the file again and copy the text exactly`);
+      }
       const updated = content.slice(0, at) + newString + content.slice(at + oldString.length);
       await host.write(filePath, updated);
       return `edited ${filePath}`;

@@ -26,3 +26,15 @@ test("unique match: replaces only that spot, every other byte unchanged", async 
   assert.equal(await read("a.ts"), "const x = 10;\nconst y = 2;\n");
   assert.equal(typeof result, "string");
 });
+
+test("not found: throws and leaves the file untouched", async () => {
+  const original = "const x = 1;\nconst y = 2;\n";
+  const { dir, edit, read } = await setup({ "a.ts": original });
+
+  await assert.rejects(
+    edit.run({ path: "a.ts", old_string: "z = 3", new_string: "z = 30" }, { root: dir }),
+    /not found/,
+  );
+
+  assert.equal(await read("a.ts"), original);
+});

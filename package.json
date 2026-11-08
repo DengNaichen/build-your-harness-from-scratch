@@ -1,0 +1,14 @@
+{
+  "name": "harness",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A minimal agent harness. Zero dependencies. G0.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "test": "node --test test/*.test.ts"
+  }
+}
